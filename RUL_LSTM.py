@@ -14,21 +14,17 @@ from keras.layers import Dense, Dropout, LSTM, Activation
 
 
 # Read training data
-train_df = pd.read_csv('PM_train.txt', sep=' ', header=None)
+train_df = pd.read_csv('phm08_data_set/train.txt', sep=' ', header=None)
 train_df.columns = ['id', 'cycle', 'setting1', 'setting2', 'setting3', 's1', 's2', 's3',
                      's4', 's5', 's6', 's7', 's8', 's9', 's10', 's11', 's12', 's13', 's14',
                      's15', 's16', 's17', 's18', 's19', 's20', 's21']
 train_df = train_df.sort_values(['id','cycle'])
 
 # Read test data
-test_df = pd.read_csv('PM_test.txt', sep=' ', header=None)
+test_df = pd.read_csv('phm08_data_set/test.txt', sep=' ', header=None)
 test_df.columns = ['id', 'cycle', 'setting1', 'setting2', 'setting3', 's1', 's2', 's3',
                      's4', 's5', 's6', 's7', 's8', 's9', 's10', 's11', 's12', 's13', 's14',
                      's15', 's16', 's17', 's18', 's19', 's20', 's21']
-                    
-# Read ground truth data
-truth_df = pd.read_csv('PM_truth.txt', sep=' ', header=None)
-
 
 # Data preprocessing
 
@@ -44,6 +40,16 @@ train_df = train_df.merge(rul, on=['id'], how='left')
 train_df['RUL'] = train_df['max'] - train_df['cycle']
 train_df.drop('max', axis=1, inplace=True)
 
+# Labeling test data
+# Create column max for test data
+rul = pd.DataFrame(test_df.groupby('id')['cycle'].max()).reset_index()
+rul.columns = ['id', 'max']
+
+# Generate RUL for test data
+test_df = test_df.merge(rul, on=['id'], how='left')
+test_df['RUL'] = test_df['max'] - test_df['cycle']
+test_df.drop('max', axis=1, inplace=True)
+
 # Generate labels for time windows (w1, w0)
 w1 = 30
 w0 = 15
@@ -53,7 +59,6 @@ train_df['label2'] = train_df['label1']
 train_df.loc[train_df['RUL'] <= w0, 'label2'] = 2
 
 # Feature scaling (min-max normalization)
-
 
 # MinMax normalization
 train_df['cycle_norm'] = train_df['cycle']
@@ -75,20 +80,6 @@ test_join_df = test_df[test_df.columns.difference(cols_normalize)].join(norm_tes
 test_df = test_join_df.reindex(columns = test_df.columns)
 test_df = test_df.reset_index(drop=True)
 test_df.head()
-
-# Labeling test data
-# Create column max for test data
-rul = pd.DataFrame(test_df.groupby('id')['cycle'].max()).reset_index()
-rul.columns = ['id', 'max']
-truth_df.columns = ['more']
-truth_df['id'] = truth_df.index+1
-truth_df['max'] = rul['max'] + truth_df['more'] #???????
-truth_df.drop('more', axis=1, inplace=True)
-
-# Generate RUL for test data
-test_df = test_df.merge(truth_df, on=['id'], how='left')
-test_df['RUL'] = test_df['max'] - test_df['cycle']
-test_df.drop('max', axis=1, inplace=True)
 
 # Generate labels for time windows for test data
 test_df['label1'] = np.where(test_df['RUL'] <= w1, 1, 0 )
@@ -125,17 +116,28 @@ sensor_cols = ['s' + str(i) for i in range(1, 22)]
 sequence_cols = ['setting1', 'setting2', 'setting3', 'cycle_norm' ]
 sequence_cols.extend(sensor_cols)
 
+print(train_df)
+print(test_df)
+
 # Creating generator for the sequences
 seq_gen = (list(
     gen_sequence(train_df[train_df['id']==id], sequence_length, sequence_cols)
     ) for id in train_df['id'].unique() ) 
 
+seq_test_gen = (list(
+    gen_sequence(test_df[test_df['id']==id], sequence_length, sequence_cols)
+    ) for id in test_df['id'].unique() ) 
+
+print('seq', seq_gen)
+print('test', seq_test_gen)
+
 # Generating sequences and converting to numpy array
 seq_array = np.concatenate(list(seq_gen)).astype(np.float32)
+#seq_test_array = np.concatenate(list(seq_test_gen)).astype(np.float32)
 
 # Creating generator for the first sequence
 first_seq_gen = (list(
-    gen_sequence(train_df[train_df['id']==1], sequence_length, sequence_cols)
+    gen_sequence(train_df[train_df['id']==id], sequence_length, sequence_cols)
     ) for id in range(1) ) 
 
 first_seq_array = np.concatenate(list(first_seq_gen)).astype(np.float32)
@@ -151,6 +153,10 @@ def gen_labels(id_df, seq_length, label):
 label_gen = [gen_labels(train_df[train_df['id']==id], sequence_length, ['RUL']) 
              for id in train_df['id'].unique()]
 label_array = np.concatenate(label_gen).astype(np.float32)
+
+label_test_gen = [gen_labels(test_df[test_df['id']==id], sequence_length, ['RUL']) 
+             for id in test_df['id'].unique()]
+label_test_array = np.concatenate(label_test_gen).astype(np.float32)
 
 first_label_gen = [gen_labels(train_df[train_df['id']==1], sequence_length, ['RUL']) ]
 first_label_array = np.concatenate(first_label_gen).astype(np.float32)
@@ -186,7 +192,7 @@ model = build(seq_array)
 
 # Fit the network
 history = model.fit(
-     seq_array, label_array, epochs=1, batch_size=200, validation_split=0.05, verbose=1,
+     seq_array, label_array, epochs=10, batch_size=200, validation_split=0.05, verbose=1,
      callbacks = [keras.callbacks.EarlyStopping(monitor='val_loss', min_delta=0, patience=5, verbose=0, mode='auto' )])
 
 
@@ -205,17 +211,6 @@ def plot_results(predicted, actual):
     plt.legend(['predicted', 'actual data'], loc='upper left')
     plt.show()
 
-def plot_training_history(history, metric, plot_title):
-    plt.plot(history.history[metric])
-    plt.plot(history.history['val_'+metric])
-    plt.title('Mean Sqared Error')
-    plt.ylabel(metric)
-    plt.xlabel('Epoch')
-    plt.legend(['Train', 'Test'], loc='upper left')
-    plt.show()
-
-plot_training_history(history, 'mse', "Mean Squared Error")
-
 y_pred = model.predict(seq_array,verbose=1, batch_size=200)
 y_true = label_array
 test_set = pd.DataFrame(y_pred)
@@ -223,12 +218,14 @@ test_set.to_csv('Output/estimated.csv', index = None)
 test_set = pd.DataFrame(y_true)
 test_set.to_csv('Output/true.csv', index = None)
 
-plot_results(y_pred, y_true)
+print(y_true)
+
+plot_results(y_pred[0:1000], y_true[0:1000])
 
 y_pred = model.predict(first_seq_array,verbose=1, batch_size=200)
 y_true = first_label_array
 
-plot_results(y_pred, y_true)
+#plot_results(y_pred, y_true)
 
 
 #cm = confusion_matrix(y_true, y_pred)
@@ -240,21 +237,12 @@ plot_results(y_pred, y_true)
 
 # Performance on the test data
 # For testing: only the last sequence for each id will be kept
-seq_array_test_last = [
-    test_df[test_df['id']==id][sequence_cols].values[-sequence_length:]
-            for id in test_df['id'].unique() if len(test_df[test_df['id']==id]) >= sequence_length]
 
-seq_array_test_last = np.asarray(seq_array_test_last).astype(np.float32)
 
-y_mask = [len(test_df[test_df['id']==id]) >= sequence_length for id in test_df['id'].unique()]
-
-label_array_test_last = test_df.groupby('id')['RUL'].nth(-1)[y_mask].values
-label_array_test_last = label_array_test_last.reshape(label_array_test_last.shape[0],1).astype(np.float32)
-
-scores_test = model.evaluate(seq_array_test_last, label_array_test_last, verbose=2)
-print('Mean Squared Error: {}'.format(scores[1]))
-print('Mean Absolute Error: {}'.format(scores[2]))
-
-y_pred_test = model.predict(seq_array_test_last)
-y_true_test = label_array_test_last
-plot_results(y_pred_test, y_true_test)
+#scores_test = model.evaluate(seq_test_array, label_test_array, verbose=2)
+#print('Mean Squared Error: {}'.format(scores_test[1]))
+#print('Mean Absolute Error: {}'.format(scores_test[2]))
+#print("label array test:", label_test_array)
+#y_pred_test = model.predict(seq_test_array)
+#y_true_test = label_test_array
+#plot_results(y_pred_test, y_true_test)
