@@ -1,4 +1,5 @@
 #https://github.com/Azure/lstms_for_predictive_maintenance/blob/master/Deep%20Learning%20Basics%20for%20Predictive%20Maintenance.ipynb
+import sys
 import keras
 import pandas as pd
 import numpy as np
@@ -10,6 +11,7 @@ from sklearn import preprocessing
 from sklearn.metrics import confusion_matrix, recall_score, precision_score
 from keras.models import Sequential
 from keras.layers import Dense, Dropout, LSTM, Activation
+
 
 # Read training data
 train_df = pd.read_csv('PM_train.txt', sep=' ', header=None)
@@ -131,6 +133,13 @@ seq_gen = (list(
 # Generating sequences and converting to numpy array
 seq_array = np.concatenate(list(seq_gen)).astype(np.float32)
 
+# Creating generator for the first sequence
+first_seq_gen = (list(
+    gen_sequence(train_df[train_df['id']==1], sequence_length, sequence_cols)
+    ) for id in range(1) ) 
+
+first_seq_array = np.concatenate(list(first_seq_gen)).astype(np.float32)
+
 # Function for generating labels
 def gen_labels(id_df, seq_length, label):
     data_array = id_df[label].values
@@ -142,6 +151,10 @@ def gen_labels(id_df, seq_length, label):
 label_gen = [gen_labels(train_df[train_df['id']==id], sequence_length, ['RUL']) 
              for id in train_df['id'].unique()]
 label_array = np.concatenate(label_gen).astype(np.float32)
+
+first_label_gen = [gen_labels(train_df[train_df['id']==1], sequence_length, ['RUL']) ]
+first_label_array = np.concatenate(first_label_gen).astype(np.float32)
+
 print("Label array: ", label_array)
 # Building the network
 # An LSTM layer with 100 units followed by another with 50 units
@@ -164,24 +177,60 @@ def build(seq_array):
             return_sequences=False))
     model.add(Dropout(0.2))
 
-    model.add(Dense(units=nb_out, activation='sigmoid'))
-    model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
+    model.add(Dense(units=nb_out, activation='linear'))
+    model.compile(loss='mean_squared_error', optimizer='sgd', metrics=['mse','mae'])
     print(model.summary())
     return model
 
 model = build(seq_array)
 
 # Fit the network
-model.fit(
-     seq_array, label_array, epochs=10, batch_size=200, validation_split=0.05, verbose=1,
-     callbacks = [keras.callbacks.EarlyStopping(monitor='val_loss', min_delta=0, patience=0, verbose=0, mode='auto' )])
+history = model.fit(
+     seq_array, label_array, epochs=1, batch_size=200, validation_split=0.05, verbose=1,
+     callbacks = [keras.callbacks.EarlyStopping(monitor='val_loss', min_delta=0, patience=5, verbose=0, mode='auto' )])
+
+
 
 scores = model.evaluate(seq_array, label_array, verbose=1, batch_size=200)
-print('Accurracy: {}'.format(scores[1]))
+print('Mean Squared Error: {}'.format(scores[1]))
+print('Mean Absolute Error: {}'.format(scores[2]))
 
-#y_pred = model.predict_classes(seq_array,verbose=1, batch_size=200)
+
+def plot_results(predicted, actual):
+    plt.plot(predicted)
+    plt.plot(actual)
+    plt.title('prediction')
+    plt.ylabel('value')
+    plt.xlabel('row')
+    plt.legend(['predicted', 'actual data'], loc='upper left')
+    plt.show()
+
+def plot_training_history(history, metric, plot_title):
+    plt.plot(history.history[metric])
+    plt.plot(history.history['val_'+metric])
+    plt.title('Mean Sqared Error')
+    plt.ylabel(metric)
+    plt.xlabel('Epoch')
+    plt.legend(['Train', 'Test'], loc='upper left')
+    plt.show()
+
+plot_training_history(history, 'mse', "Mean Squared Error")
+
+y_pred = model.predict(seq_array,verbose=1, batch_size=200)
 y_true = label_array
-print('Confusion matrix\n- x-axis is true labels.\n- y-axis is predicted labels')
+test_set = pd.DataFrame(y_pred)
+test_set.to_csv('Output/estimated.csv', index = None)
+test_set = pd.DataFrame(y_true)
+test_set.to_csv('Output/true.csv', index = None)
+
+plot_results(y_pred, y_true)
+
+y_pred = model.predict(first_seq_array,verbose=1, batch_size=200)
+y_true = first_label_array
+
+plot_results(y_pred, y_true)
+
+
 #cm = confusion_matrix(y_true, y_pred)
 #print(cm)
 
@@ -199,3 +248,13 @@ seq_array_test_last = np.asarray(seq_array_test_last).astype(np.float32)
 
 y_mask = [len(test_df[test_df['id']==id]) >= sequence_length for id in test_df['id'].unique()]
 
+label_array_test_last = test_df.groupby('id')['RUL'].nth(-1)[y_mask].values
+label_array_test_last = label_array_test_last.reshape(label_array_test_last.shape[0],1).astype(np.float32)
+
+scores_test = model.evaluate(seq_array_test_last, label_array_test_last, verbose=2)
+print('Mean Squared Error: {}'.format(scores[1]))
+print('Mean Absolute Error: {}'.format(scores[2]))
+
+y_pred_test = model.predict(seq_array_test_last)
+y_true_test = label_array_test_last
+plot_results(y_pred_test, y_true_test)
