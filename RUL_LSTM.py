@@ -13,80 +13,38 @@ from keras.models import Sequential
 from keras.layers import Dense, Dropout, LSTM, Activation
 
 
-# Read training data
-train_df = pd.read_csv('phm08_data_set/train.txt', sep=' ', header=None)
-train_df.columns = ['id', 'cycle', 'setting1', 'setting2', 'setting3', 's1', 's2', 's3',
+def reading_dataset(filepath):
+    df = pd.read_csv(filepath, sep=' ', header=None)
+    df.columns = ['id', 'cycle', 'setting1', 'setting2', 'setting3', 's1', 's2', 's3',
                      's4', 's5', 's6', 's7', 's8', 's9', 's10', 's11', 's12', 's13', 's14',
                      's15', 's16', 's17', 's18', 's19', 's20', 's21']
-train_df = train_df.sort_values(['id','cycle'])
+    df = df.sort_values(['id','cycle'])
+    return df
 
-# Read test data
-test_df = pd.read_csv('phm08_data_set/test.txt', sep=' ', header=None)
-test_df.columns = ['id', 'cycle', 'setting1', 'setting2', 'setting3', 's1', 's2', 's3',
-                     's4', 's5', 's6', 's7', 's8', 's9', 's10', 's11', 's12', 's13', 's14',
-                     's15', 's16', 's17', 's18', 's19', 's20', 's21']
+def generate_rul_labeling(df):
+    rul = pd.DataFrame(df.groupby('id')['cycle'].max()).reset_index()
+    rul.columns = ['id', 'max']
+    df = df.merge(rul, on=['id'], how='left')
+    df['RUL'] = df['max'] - train_df['cycle']
+    df.drop('max', axis=1, inplace=True)
+    return df
 
-# Data preprocessing
+def create_time_window_labels(df, w0, w1):
+    df['label1'] = np.where(df['RUL'] <= w1, 1, 0 )
+    df['label2'] = df['label1']
+    df.loc[df['RUL'] <= w0, 'label2'] = 2
+    return df
 
-# 1. Data labeling - generating new column: RUL 
-# RUL value of a specific enginge: 
-    # occurance with the highest cycle number of the same id - actual cycle number
-rul = pd.DataFrame(train_df.groupby('id')['cycle'].max()).reset_index()
-rul.columns = ['id', 'max']
-
-# Merge max values with the training set
-train_df = train_df.merge(rul, on=['id'], how='left')
-# Calculate RUL
-train_df['RUL'] = train_df['max'] - train_df['cycle']
-train_df.drop('max', axis=1, inplace=True)
-
-# Labeling test data
-# Create column max for test data
-rul = pd.DataFrame(test_df.groupby('id')['cycle'].max()).reset_index()
-rul.columns = ['id', 'max']
-
-# Generate RUL for test data
-test_df = test_df.merge(rul, on=['id'], how='left')
-test_df['RUL'] = test_df['max'] - test_df['cycle']
-test_df.drop('max', axis=1, inplace=True)
-
-# Generate labels for time windows (w1, w0)
-w1 = 30
-w0 = 15
-
-train_df['label1'] = np.where(train_df['RUL'] <= w1, 1, 0)
-train_df['label2'] = train_df['label1']
-train_df.loc[train_df['RUL'] <= w0, 'label2'] = 2
-
-# Feature scaling (min-max normalization)
-
-# MinMax normalization
-train_df['cycle_norm'] = train_df['cycle']
-
-# Columns to be normalized: all columns except for id, cycle, RUL, label1, label2
-cols_normalize = train_df.columns.difference(['id','cycle','RUL','label1','label2'])
-min_max_scaler = preprocessing.MinMaxScaler()
-norm_train_df = pd.DataFrame(min_max_scaler.fit_transform(train_df[cols_normalize]), 
-                             columns=cols_normalize, 
-                             index=train_df.index)
-join_df = train_df[train_df.columns.difference(cols_normalize)].join(norm_train_df)
-train_df = join_df.reindex(columns = train_df.columns)
-
-test_df['cycle_norm'] = test_df['cycle']
-norm_test_df = pd.DataFrame(min_max_scaler.transform(test_df[cols_normalize]), 
-                            columns=cols_normalize, 
-                            index=test_df.index)
-test_join_df = test_df[test_df.columns.difference(cols_normalize)].join(norm_test_df)
-test_df = test_join_df.reindex(columns = test_df.columns)
-test_df = test_df.reset_index(drop=True)
-test_df.head()
-
-# Generate labels for time windows for test data
-test_df['label1'] = np.where(test_df['RUL'] <= w1, 1, 0 )
-test_df['label2'] = test_df['label1']
-test_df.loc[test_df['RUL'] <= w0, 'label2'] = 2
-
-sequence_length = 50
+def normalize(df):
+    df['cycle_norm'] = df['cycle']
+    cols_normalize = df.columns.difference(['id','cycle','RUL','label1','label2'])
+    min_max_scaler = preprocessing.MinMaxScaler()
+    norm_df = pd.DataFrame(min_max_scaler.fit_transform(df[cols_normalize]), 
+                                columns=cols_normalize, 
+                                index=df.index)
+    join_df = df[df.columns.difference(cols_normalize)].join(norm_df)
+    df = join_df.reindex(columns = df.columns)
+    return df
 
 def visualize():
     engine_id3 = test_df[test_df['id'] == 3]
@@ -100,8 +58,6 @@ def visualize():
     ax1 = engine_id3_50cycleWindow1.plot(subplots=True, sharex=True, figsize=(20,20))
     ax2 = engine_id3_50cycleWindow2.plot(subplots=True, sharex=True, figsize=(20,20))
     plt.show()
-  
-#visualize()
 
 # Reshape features into form (samples, time steps, features)
 def gen_sequence(id_df, seq_length, seq_cols):
@@ -111,62 +67,18 @@ def gen_sequence(id_df, seq_length, seq_cols):
     for start, stop in zip(range(0, num_elements-seq_length), range(seq_length, num_elements)):
         yield data_array[start:stop, :]
 
-# Picking the feature columns
-sensor_cols = ['s' + str(i) for i in range(1, 22)]
-sequence_cols = ['setting1', 'setting2', 'setting3', 'cycle_norm' ]
-sequence_cols.extend(sensor_cols)
-
-print(train_df)
-print(test_df)
-
-# Creating generator for the sequences
-seq_gen = (list(
-    gen_sequence(train_df[train_df['id']==id], sequence_length, sequence_cols)
-    ) for id in train_df['id'].unique() ) 
-
-seq_test_gen = (list(
-    gen_sequence(test_df[test_df['id']==id], sequence_length, sequence_cols)
-    ) for id in test_df['id'].unique() ) 
-
-print('seq', seq_gen)
-print('test', seq_test_gen)
-
-# Generating sequences and converting to numpy array
-seq_array = np.concatenate(list(seq_gen)).astype(np.float32)
-#seq_test_array = np.concatenate(list(seq_test_gen)).astype(np.float32)
-
-# Creating generator for the first sequence
-first_seq_gen = (list(
-    gen_sequence(train_df[train_df['id']==id], sequence_length, sequence_cols)
-    ) for id in range(1) ) 
-
-first_seq_array = np.concatenate(list(first_seq_gen)).astype(np.float32)
-
 # Function for generating labels
 def gen_labels(id_df, seq_length, label):
     data_array = id_df[label].values
     num_elements = data_array.shape[0]
     return data_array[seq_length:num_elements, :]
 
-# Generating labels
-# changed: from label1 to RUL
-label_gen = [gen_labels(train_df[train_df['id']==id], sequence_length, ['RUL']) 
-             for id in train_df['id'].unique()]
-label_array = np.concatenate(label_gen).astype(np.float32)
-
-label_test_gen = [gen_labels(test_df[test_df['id']==id], sequence_length, ['RUL']) 
-             for id in test_df['id'].unique()]
-label_test_array = np.concatenate(label_test_gen).astype(np.float32)
-
-first_label_gen = [gen_labels(train_df[train_df['id']==1], sequence_length, ['RUL']) ]
-first_label_array = np.concatenate(first_label_gen).astype(np.float32)
-
-print("Label array: ", label_array)
 # Building the network
 # An LSTM layer with 100 units followed by another with 50 units
 # Dropout of 0.2 applied after each LSTM layer
-# Binary classification -> final layer: a single unit with sigmoid activation
-def build(seq_array):
+# Regression -> final layer: a single unit with linear activation
+# Stochastic gradient descent optimizer used
+def build_nn_for_regression(seq_array):
     nb_features = seq_array.shape[2]
     nb_out = label_array.shape[1]
     
@@ -188,61 +100,149 @@ def build(seq_array):
     print(model.summary())
     return model
 
-model = build(seq_array)
+# RUL value of a specific enginge: 
+# occurance with the highest cycle number of the same id - actual cycle number
+def generate_rul_labeling(df):
+    rul = pd.DataFrame(df.groupby('id')['cycle'].max()).reset_index()
+    rul.columns = ['id', 'max']
+    # Merge max values with the training set
+    df = df.merge(rul, on=['id'], how='left')
+    # Calculate RUL
+    df['RUL'] = df['max'] - df['cycle']
+    df.drop('max', axis=1, inplace=True)
+    return df
+
+def create_time_window_labels(df, w0, w1):
+    df['label1'] = np.where(df['RUL'] <= w1, 1, 0 )
+    df['label2'] = df['label1']
+    df.loc[df['RUL'] <= w0, 'label2'] = 2
+    return df
+
+# MinMax normalization (from 0 to 1)
+def normalize(df):
+    df['cycle_norm'] = df['cycle']
+    cols_normalize = df.columns.difference(['id','cycle','RUL','label1','label2'])
+    min_max_scaler = preprocessing.MinMaxScaler()
+    norm_df = pd.DataFrame(min_max_scaler.fit_transform(df[cols_normalize]), 
+                                columns=cols_normalize, 
+                                index=df.index)
+    join_df = df[df.columns.difference(cols_normalize)].join(norm_df)
+    df = join_df.reindex(columns = df.columns)
+    return df
+
+def generate_sequence_array(df):
+    # Creating generator for the sequences
+    seq_gen = (list(gen_sequence(df[df['id']==id], sequence_length, sequence_cols)) 
+            for id in df['id'].unique())    
+
+    # Generating sequences and converting them to numpy array
+    seq_list = list(seq_gen)
+    seq_list = list(filter(None, seq_list))
+    seq_array = np.concatenate(seq_list).astype(np.float32)
+
+    return seq_array
+
+def introduce_ground_truth(filepath, test_df):
+    # read ground truth data
+    truth_df = pd.read_csv('PM_truth.txt', sep=" ", header=None)
+
+    # generate column max for test data
+    rul = pd.DataFrame(test_df.groupby('id')['cycle'].max()).reset_index()
+    rul.columns = ['id', 'max']
+    truth_df.columns = ['more']
+    truth_df['id'] = truth_df.index + 1
+    truth_df['max'] = rul['max'] + truth_df['more']
+    truth_df.drop('more', axis=1, inplace=True)
+    # generate RUL for test data
+    test_df = test_df.merge(truth_df, on=['id'], how='left')
+    test_df['RUL'] = test_df['max'] - test_df['cycle']
+    test_df.drop('max', axis=1, inplace=True)
+    return test_df
+
+def plot_results(predicted, actual):
+    plt.plot(predicted)
+    plt.plot(actual)
+    plt.title('Results')
+    plt.legend(['Prediction', 'Actual'], loc='upper left')
+    plt.show()
+
+def generate_rul_label_arrays(df):
+    label_gen = [gen_labels(df[df['id']==id], sequence_length, ['RUL']) 
+                for id in df['id'].unique()]
+    return np.concatenate(label_gen).astype(np.float32)
+
+# Data preprocessing
+training_set_path = 'phm08_data_set/train.txt'
+test_set_path = 'phm08_data_set/test.txt'
+path_of_ground_truth = ''
+
+# Read training data
+train_df = reading_dataset(training_set_path)
+
+# Read test data
+test_df = reading_dataset(test_set_path)
+
+# 1. Data labeling - generating new column: RUL 
+
+train_df = generate_rul_labeling(train_df)
+
+if(path_of_ground_truth):
+    test_df = introduce_ground_truth(path_of_ground_truth, test_df)
+else:
+    test_df = generate_rul_labeling(test_df)
+
+# Generate labels for time windows (w1, w0)
+w1 = 30
+w0 = 15
+
+train_df = create_time_window_labels(train_df, w0, w1)
+test_df = create_time_window_labels(test_df, w0, w1)
+
+# Feature scaling (min-max normalization)
+train_df = normalize(train_df)
+test_df = normalize(test_df)
+
+sequence_length = 50
+
+# Picking the feature columns
+sensor_cols = ['s' + str(i) for i in range(1, 22)]
+sequence_cols = ['setting1', 'setting2', 'setting3', 'cycle_norm' ]
+sequence_cols.extend(sensor_cols)
+
+test_array = generate_sequence_array(test_df)  
+
+seq_array = generate_sequence_array(train_df)
+
+# Generating labels (RUL)
+label_array = generate_rul_label_arrays(train_df)
+label_test_array = generate_rul_label_arrays(test_df)
+
+model = build_nn_for_regression(seq_array)
+print(model.summary())
 
 # Fit the network
 history = model.fit(
-     seq_array, label_array, epochs=10, batch_size=200, validation_split=0.05, verbose=1,
-     callbacks = [keras.callbacks.EarlyStopping(monitor='val_loss', min_delta=0, patience=5, verbose=0, mode='auto' )])
-
-
+     seq_array, label_array, epochs=50, batch_size=200, validation_split=0.05, verbose=1,
+     callbacks = [keras.callbacks.EarlyStopping(monitor='val_loss', min_delta=0, patience=10, verbose=0, mode='auto' )])
 
 scores = model.evaluate(seq_array, label_array, verbose=1, batch_size=200)
 print('Mean Squared Error: {}'.format(scores[1]))
 print('Mean Absolute Error: {}'.format(scores[2]))
 
+# In-sample
+predicted = model.predict(seq_array,verbose=1, batch_size=200)
+actual = label_array
 
-def plot_results(predicted, actual):
-    plt.plot(predicted)
-    plt.plot(actual)
-    plt.title('prediction')
-    plt.ylabel('value')
-    plt.xlabel('row')
-    plt.legend(['predicted', 'actual data'], loc='upper left')
-    plt.show()
+plot_results(predicted[0:1000], actual[0:1000])
+plot_results(predicted, actual)
 
-y_pred = model.predict(seq_array,verbose=1, batch_size=200)
-y_true = label_array
-test_set = pd.DataFrame(y_pred)
-test_set.to_csv('Output/estimated.csv', index = None)
-test_set = pd.DataFrame(y_true)
-test_set.to_csv('Output/true.csv', index = None)
+# Out-of-sample
+scores_test = model.evaluate(test_array, label_test_array, verbose=2)
+print('Mean Squared Error: {}'.format(scores_test[1]))
+print('Mean Absolute Error: {}'.format(scores_test[2]))
 
-print(y_true)
+predicted_test = model.predict(test_array)
+actual_test = label_test_array
 
-plot_results(y_pred[0:1000], y_true[0:1000])
-
-y_pred = model.predict(first_seq_array,verbose=1, batch_size=200)
-y_true = first_label_array
-
-#plot_results(y_pred, y_true)
-
-
-#cm = confusion_matrix(y_true, y_pred)
-#print(cm)
-
-#precision = precision_score(y_true, y_pred)
-#recall = recall_score(y_true, y_pred)
-#print( 'precision = ', precision, '\n', 'recall = ', recall)
-
-# Performance on the test data
-# For testing: only the last sequence for each id will be kept
-
-
-#scores_test = model.evaluate(seq_test_array, label_test_array, verbose=2)
-#print('Mean Squared Error: {}'.format(scores_test[1]))
-#print('Mean Absolute Error: {}'.format(scores_test[2]))
-#print("label array test:", label_test_array)
-#y_pred_test = model.predict(seq_test_array)
-#y_true_test = label_test_array
-#plot_results(y_pred_test, y_true_test)
+plot_results(predicted_test[0:1000], actual_test[0:1000])
+plot_results(predicted_test, actual_test)
