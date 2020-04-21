@@ -144,7 +144,7 @@ def generate_sequence_array(df):
 
 def introduce_ground_truth(filepath, test_df):
     # read ground truth data
-    truth_df = pd.read_csv('PM_truth.txt', sep=" ", header=None)
+    truth_df = pd.read_csv(filepath, sep=" ", header=None)
 
     # generate column max for test data
     rul = pd.DataFrame(test_df.groupby('id')['cycle'].max()).reset_index()
